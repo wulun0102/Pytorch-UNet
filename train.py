@@ -4,82 +4,129 @@ import os
 import sys
 
 import numpy as np
+import matplotlib.pyplot as plt
+
+import config
+
 import torch
 import torch.nn as nn
 from torch import optim
+import torch.backends.cudnn as cudnn
+
 from tqdm import tqdm
 
 from eval import eval_net
 from unet import UNet
 
-from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, Subset
+from torch.utils.tensorboard import SummaryWriter
 
-dir_img = 'data/imgs/'
-dir_mask = 'data/masks/'
-dir_checkpoint = 'checkpoints/'
+import segmentation_models_pytorch as smp
+from model.deeplab import Res_Deeplab
+from model.pretrained_deeplab import DeepLabv3_plus
 
+import wandb
+# wandb.init()
+
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+
+#######################################
+#######################################
 
 def train_net(net,
+              upsample,
               device,
-              epochs=5,
+              epochs=8,
               batch_size=1,
               lr=0.001,
               val_percent=0.1,
               save_cp=True,
-              img_scale=0.5):
+              img_scale=1):
 
-    dataset = BasicDataset(dir_img, dir_mask, img_scale)
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train, val = random_split(dataset, [n_train, n_val])
+    dataset = BasicDataset(config.RGB_DIR_PATH, config.MASKS_DIR_PATH,
+                           scale=img_scale, apply_imgaug=config.APPLY_IMAGE_AUG,
+                           take_center_crop=config.TAKE_CENTER_CROP, crop_h=config.CROP_H, crop_w=config.CROP_W,
+                           mask_suffix=config.GT_MASK_SUFFIX)
+
+    if config.TRAIN_ON_SUBSET:
+        #################
+        ### split files
+        #################
+        np.random.seed(0)
+        total_idx = np.arange(0, len(dataset), 1)
+        train_idx = np.random.choice(total_idx, size=config.NUM_TRAIN, replace=False)
+        val_idx = np.random.choice(np.delete(total_idx, train_idx), size=int(config.NUM_TRAIN*val_percent), replace=False)
+        n_train, n_val = len(train_idx), len(val_idx)
+        train, val = Subset(dataset, train_idx), Subset(dataset, val_idx)
+    else:
+        # n_val = int(len(dataset) * val_percent)
+        # n_train = len(dataset) - n_val
+        n_val = config.NUM_VAL
+        n_train = len(dataset) - n_val
+        train, val = random_split(dataset, [n_train, n_val])
+
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True, drop_last=True)
 
-    writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_SCALE_{img_scale}')
+    writer = SummaryWriter(comment=f'_{config.EXPERIMENT}')
     global_step = 0
 
     logging.info(f'''Starting training:
+        Model:           {config.MODEL_SELECTION}
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {lr}
+        Checkpoints:     {save_cp}
+        Train on subset: {config.TRAIN_ON_SUBSET}
         Training size:   {n_train}
         Validation size: {n_val}
-        Checkpoints:     {save_cp}
-        Device:          {device.type}
         Images scaling:  {img_scale}
+        Crop images:     {config.TAKE_CENTER_CROP}
+        Image Size:      {config.CROP_H}, {config.CROP_W}
+        Apply imgaug:    {config.APPLY_IMAGE_AUG}
+        Device:          {device.type}
     ''')
 
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
-    if net.n_classes > 1:
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if config.NUM_CLASSES > 1 else 'max', patience=2)
+    if config.NUM_CLASSES > 1:
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.BCEWithLogitsLoss()
 
+    if save_cp:
+        try:
+            os.mkdir(config.CHECKPOINT_DIR_PATH)
+            logging.info('Created checkpoint directory')
+        except OSError:
+            pass
+
     for epoch in range(epochs):
         net.train()
-
         epoch_loss = 0
+        best_Fwb = -np.inf
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             for batch in train_loader:
                 imgs = batch['image']
                 true_masks = batch['mask']
-                assert imgs.shape[1] == net.n_channels, \
-                    f'Network has been defined with {net.n_channels} input channels, ' \
+                assert imgs.shape[1] == config.NUM_CHANNELS, \
+                    f'Network has been defined with {config.NUM_CHANNELS} input channels, ' \
                     f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
                     'the images are loaded correctly.'
 
                 imgs = imgs.to(device=device, dtype=torch.float32)
-                mask_type = torch.float32 if net.n_classes == 1 else torch.long
+                mask_type = torch.float32 if config.NUM_CLASSES == 1 else torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
 
-                masks_pred = net(imgs)
-                loss = criterion(masks_pred, true_masks)
+                if config.MODEL_SELECTION == 'adapt_deeplab':
+                    masks_pred = upsample(net(imgs))
+                else:
+                    masks_pred = net(imgs)
+
+                loss = criterion(masks_pred, true_masks.squeeze(1))
                 epoch_loss += loss.item()
                 writer.add_scalar('Loss/train', loss.item(), global_step)
-
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
 
                 optimizer.zero_grad()
@@ -89,58 +136,62 @@ def train_net(net,
 
                 pbar.update(imgs.shape[0])
                 global_step += 1
-                if global_step % (n_train // (10 * batch_size)) == 0:
+                # if global_step % (n_train // (10 * batch_size)) == 0:
+                if global_step % (n_train // (1 * batch_size)) == 0:
+                    # segmentation model
                     for tag, value in net.named_parameters():
                         tag = tag.replace('.', '/')
-                        writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
-                        writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
-                    val_score = eval_net(net, val_loader, device)
-                    scheduler.step(val_score)
+                        if value.grad is None:
+                            # print('Layer: ', tag.split('/'))
+                            writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
+                            pass
+                        else:
+                            writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
+                            writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
+
+                    # weighted fwb score
+                    val_loss, Fwb = eval_net(net, upsample, val_loader, writer, global_step, device)
+
+                    scheduler.step(val_loss)
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
-                    if net.n_classes > 1:
-                        logging.info('Validation cross entropy: {}'.format(val_score))
-                        writer.add_scalar('Loss/test', val_score, global_step)
+                    if config.NUM_CLASSES > 1:
+                        writer.add_scalar('Weighted-Fb/test', Fwb, global_step)
+                        writer.add_scalar('Loss/test', val_loss, global_step)
                     else:
-                        logging.info('Validation Dice Coeff: {}'.format(val_score))
-                        writer.add_scalar('Dice/test', val_score, global_step)
+                        logging.info('Validation Dice Coeff: {}'.format(Fwb))
+                        writer.add_scalar('Dice/test', Fwb, global_step)
 
-                    writer.add_images('images', imgs, global_step)
-                    if net.n_classes == 1:
-                        writer.add_images('masks/true', true_masks, global_step)
-                        writer.add_images('masks/pred', torch.sigmoid(masks_pred) > 0.5, global_step)
+                    if Fwb > best_Fwb and save_cp:
+                        best_Fwb = Fwb
+                        torch.save(net.state_dict(), config.BEST_MODEL_SAVE_PATH)
+                        logging.info('Best Model Saved with Fwb: {:.5}!'.format(best_Fwb))
 
-        if save_cp:
-            try:
-                os.mkdir(dir_checkpoint)
-                logging.info('Created checkpoint directory')
-            except OSError:
-                pass
-            torch.save(net.state_dict(),
-                       dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
-            logging.info(f'Checkpoint {epoch + 1} saved !')
-
+        # if save_cp:
+        #     torch.save(net.state_dict(), config.MODEL_SAVE_PATH)
+        #     logging.info(f'Checkpoint {epoch} saved !')
+    if save_cp:
+        torch.save(net.state_dict(), config.BEST_MODEL_SAVE_PATH + '_' + str(best_Fwb))
+        logging.info('Final Model Saved with Fwb: {:.5}!'.format(best_Fwb))
     writer.close()
-
 
 def get_args():
     parser = argparse.ArgumentParser(description='Train the UNet on images and target masks',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=5,
+    parser.add_argument('-e', '--epochs', metavar='E', type=int, default=config.EPOCHS,
                         help='Number of epochs', dest='epochs')
-    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=1,
+    parser.add_argument('-b', '--batch-size', metavar='B', type=int, nargs='?', default=config.BATCH_SIZE,
                         help='Batch size', dest='batchsize')
-    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=0.0001,
+    parser.add_argument('-l', '--learning-rate', metavar='LR', type=float, nargs='?', default=config.LR,
                         help='Learning rate', dest='lr')
     parser.add_argument('-f', '--load', dest='load', type=str, default=False,
                         help='Load model from a .pth file')
-    parser.add_argument('-s', '--scale', dest='scale', type=float, default=0.5,
+    parser.add_argument('-s', '--scale', dest='scale', type=float, default=1,
                         help='Downscaling factor of the images')
-    parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
+    parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0/100.0,
                         help='Percent of the data that is used as validation (0-100)')
 
     return parser.parse_args()
-
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
@@ -154,11 +205,25 @@ if __name__ == '__main__':
     #   - For 1 class and background, use n_classes=1
     #   - For 2 classes, use n_classes=1
     #   - For N > 2 classes, use n_classes=N
-    net = UNet(n_channels=3, n_classes=1, bilinear=True)
+    if config.MODEL_SELECTION == 'og_unet':
+        net = UNet(n_channels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES, bilinear=True)
+    elif config.MODEL_SELECTION == 'smp_unet':
+        net = smp.Unet(config.BACKBONE, encoder_weights=config.ENCODER_WEIGHTS, classes=config.NUM_CLASSES)
+    elif config.MODEL_SELECTION == 'smp_fpn':
+        net = smp.FPN(config.BACKBONE, encoder_weights=config.ENCODER_WEIGHTS, classes=config.NUM_CLASSES)
+    elif config.MODEL_SELECTION == 'pretrained_deeplab':
+        net = DeepLabv3_plus(nInputChannels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES,
+                             os=16, pretrained=False, _print=False)
+    elif config.MODEL_SELECTION == 'adapt_deeplab':
+        net = Res_Deeplab(num_classes=config.NUM_CLASSES)
+    else:
+        logging.info("*** No Model Selected! ***")
+        exit(0)
+    upsample = nn.Upsample(size=(config.CROP_H, config.CROP_W), mode='bilinear', align_corners=True)
+
     logging.info(f'Network:\n'
-                 f'\t{net.n_channels} input channels\n'
-                 f'\t{net.n_classes} output channels (classes)\n'
-                 f'\t{"Bilinear" if net.bilinear else "Transposed conv"} upscaling')
+                 f'\t{config.NUM_CHANNELS} input channels\n'
+                 f'\t{config.NUM_CLASSES} output channels (classes)\n')
 
     if args.load:
         net.load_state_dict(
@@ -168,16 +233,20 @@ if __name__ == '__main__':
 
     net.to(device=device)
     # faster convolutions, but more memory
-    # cudnn.benchmark = True
+    cudnn.benchmark = True
+
+    from torchsummary import summary
+    summary(net, (config.NUM_CHANNELS, config.CROP_H, config.CROP_W))
 
     try:
         train_net(net=net,
+                  upsample=upsample,
                   epochs=args.epochs,
                   batch_size=args.batchsize,
                   lr=args.lr,
                   device=device,
                   img_scale=args.scale,
-                  val_percent=args.val / 100)
+                  val_percent=args.val)
     except KeyboardInterrupt:
         torch.save(net.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')
