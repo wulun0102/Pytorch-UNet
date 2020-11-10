@@ -12,7 +12,7 @@ from tqdm import tqdm
 import config
 from weighted_Fb import weightedFb
 
-def eval_net(net, upsample, loader, writer, global_step, device):
+def eval_net(net, upsample, loader, writer, best_Fwb, global_step, device):
     """Evaluation without the densecrf with the dice coefficient"""
     net.eval()
     mask_type = torch.float32 if config.NUM_CLASSES == 1 else torch.long
@@ -27,22 +27,39 @@ def eval_net(net, upsample, loader, writer, global_step, device):
     img_idx = 0
     with tqdm(total=n_val, desc='Validation round', unit='batch', leave=False) as pbar:
         for batch in loader:
-            imgs, true_masks = batch['image'], batch['mask']
+            imgs, depths, true_masks = batch['image'], batch['depth'], batch['mask']
             imgs = imgs.to(device=device, dtype=torch.float32)
+            depths = depths.to(device=device, dtype=torch.float32)
             true_masks = true_masks.to(device=device, dtype=mask_type)
             with torch.no_grad():
-                if config.MODEL_SELECTION == 'adapt_deeplab':
-                    mask_pred = upsample(net(imgs))
-                else:
-                    mask_pred = net(imgs)
+                if config.MULTI_PRED:
+                    ###################################
+                    # multi
+                    ###################################
+                    if config.USE_DEPTH_IMAGES:
+                        masks_pred1, masks_pred2 = net(imgs, depths)
+                    else:
+                        masks_pred1, masks_pred2 = net(imgs)
+                    mask_pred = masks_pred1
 
-            ###################
-            # val loss
-            ###################
-            if config.NUM_CLASSES > 1:
-                tot_loss += criterion(mask_pred, true_masks.squeeze(1)).item()
-            else:
-                raise NotImplementedError
+                    if config.NUM_CLASSES > 1:
+                        tot_loss += criterion(masks_pred1, true_masks.squeeze(1)).item() + criterion(masks_pred2, true_masks.squeeze(1)).item()
+                    else:
+                        raise NotImplementedError
+
+                else:
+                    ###################################
+                    # single
+                    ###################################
+                    if config.MODEL_SELECTION == 'og_deeplab':
+                        mask_pred = upsample(net(imgs))
+                    else:
+                        mask_pred = net(imgs)
+
+                    if config.NUM_CLASSES > 1:
+                        tot_loss += criterion(mask_pred, true_masks.squeeze(1)).item()
+                    else:
+                        raise NotImplementedError
 
             ###################
             # getting prediction
@@ -67,20 +84,20 @@ def eval_net(net, upsample, loader, writer, global_step, device):
             # print("gt_mask: ", gt.shape)
             # print("pred_mask: ", pred.shape)
 
-            if img_idx == 0:
-                writer.add_images('gt_mask', gt * 40, global_step)
-                writer.add_images('pred_mask', pred * 40, global_step)
+            # if img_idx == 0:
+            #     writer.add_images('gt_mask', gt * 40, global_step)
+            #     writer.add_images('pred_mask', pred * 40, global_step)
 
             ###################
             # saving images for Fwb
             ###################
 
             for i in range(config.BATCH_SIZE):
-                gt_mask_addr = config.TEST_PRED_DIR_PATH + str(img_idx) + config.GT_SAVE_MASK_EXT
+                gt_mask_addr = config.VAL_PRED_DIR_PATH + str(img_idx) + config.GT_SAVE_MASK_EXT
                 gt_test = np.squeeze(gt[i, :, :, :])
                 Image.fromarray(gt_test).save(gt_mask_addr)
 
-                pred_mask_addr = config.TEST_PRED_DIR_PATH + str(img_idx) + config.PRED_MASK_EXT
+                pred_mask_addr = config.VAL_PRED_DIR_PATH + str(img_idx) + config.PRED_MASK_EXT
                 pred_test = np.squeeze(pred[i, :, :, :])
                 Image.fromarray(pred_test).save(pred_mask_addr)
 
@@ -103,7 +120,10 @@ def eval_net(net, upsample, loader, writer, global_step, device):
             pbar.update()
 
     val_loss = tot_loss/n_val
-    Fwb = weightedFb(config.TEST_PRED_DIR_PATH, aff_start=config.AFFORDANCE_START, aff_end=config.AFFORDANCE_END,
+    Fwb = weightedFb(config.VAL_PRED_DIR_PATH, aff_start=config.AFFORDANCE_START, aff_end=config.AFFORDANCE_END,
                      VERBOSE=False, VISUALIZE=False)
+    if Fwb > best_Fwb:
+        writer.add_images('gt_mask', gt * 40, global_step)
+        writer.add_images('pred_mask', pred * 40, global_step)
     net.train()
     return val_loss, Fwb

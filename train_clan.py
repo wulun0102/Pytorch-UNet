@@ -29,8 +29,12 @@ import segmentation_models_pytorch as smp
 from model.deeplab import Res_Deeplab
 from model.pretrained_deeplab import DeepLabv3_plus
 from model.pretrained_deeplab_multi import DeepLabv3_plus_multi
+from model.pretrained_deeplab_multi_depth import DeepLabv3_plus_multi_depth
 
 from model.discriminator import FCDiscriminator
+
+from loss import CrossEntropy2d
+from loss import WeightedBCEWithLogitsLoss
 
 import wandb
 # wandb.init()
@@ -41,8 +45,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 #######################################
 
 def train_net(net,
-              discriminator1,
-              discriminator2,
+              discriminator,
               upsample,
               device,
               epochs=8,
@@ -55,11 +58,12 @@ def train_net(net,
     ##########################
     # creating syn dataset
     ##########################
-    dataset = BasicDataset(config.SOURCE_RGB_DIR_PATH, config.SOURCE_MASKS_DIR_PATH,
+    dataset = BasicDataset(imgs_dir=config.SOURCE_RGB_DIR_PATH, masks_dir=config.SOURCE_MASKS_DIR_PATH,
+                           depth_dir=config.SOURCE_DEPTH_DIR_PATH,
                            extend_dataset=True, num_images=config.ITERATIONS,
                            scale=img_scale, apply_imgaug=config.APPLY_IMAGE_AUG,
                            take_center_crop=config.TAKE_CENTER_CROP, crop_h=config.CROP_H, crop_w=config.CROP_W,
-                           mask_suffix=config.SOURCE_GT_MASK_SUFFIX)
+                           mask_suffix=config.SOURCE_GT_MASK_SUFFIX, depth_suffix=config.SOURCE_DEPTH_SUFFIX)
 
     source_train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
     source_train_iterator = enumerate(source_train_loader)
@@ -67,11 +71,12 @@ def train_net(net,
     ##########################
     # creating real dataset
     ##########################
-    dataset = BasicDataset(config.TARGET_RGB_DIR_PATH, config.TARGET_MASKS_DIR_PATH,
+    dataset = BasicDataset(imgs_dir=config.TARGET_RGB_DIR_PATH, masks_dir=config.TARGET_MASKS_DIR_PATH,
+                           depth_dir=config.TARGET_DEPTH_DIR_PATH,
                            extend_dataset=True, num_images=int(config.ITERATIONS + config.NUM_VAL),
                            scale=img_scale, apply_imgaug=config.APPLY_IMAGE_AUG,
                            take_center_crop=config.TAKE_CENTER_CROP, crop_h=config.CROP_H, crop_w=config.CROP_W,
-                           mask_suffix=config.TARGET_GT_MASK_SUFFIX)
+                           mask_suffix=config.TARGET_GT_MASK_SUFFIX, depth_suffix=config.TARGET_DEPTH_SUFFIX)
 
     n_val = config.NUM_VAL
     n_train = len(dataset) - n_val
@@ -87,11 +92,13 @@ def train_net(net,
     ##########################
     ##########################
 
-    writer = SummaryWriter(comment=f'_ADV_{config.EXPERIMENT}')
+    writer = SummaryWriter(comment=f'CLAN_ADV_{config.EXPERIMENT}')
     global_step = 0
 
     logging.info(f'''Starting training:
         Model:           {config.MODEL_SELECTION}
+        Multi Pred:      {config.MULTI_PRED}
+        Use Depth:       {config.USE_DEPTH_IMAGES}
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {lr}
@@ -122,45 +129,55 @@ def train_net(net,
     ##################
     # DISCRIMINATOR
     ##################
-    optimizer_discriminator1 = optim.Adam(discriminator1.parameters(), lr=lr, betas=(0.9, 0.99))
-    optimizer_discriminator2 = optim.Adam(discriminator2.parameters(), lr=lr, betas=(0.9, 0.99))
+    optimizer_discriminator = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.9, 0.99))
+    bce_loss = torch.nn.BCEWithLogitsLoss()
+    weighted_bce_loss = WeightedBCEWithLogitsLoss()
 
-    if config.GAN == 'Vanilla':
-        bce_loss = torch.nn.BCEWithLogitsLoss()
-    elif config.GAN == 'LS':
-        bce_loss = torch.nn.MSELoss()
-    else:
-        raise NotImplementedError
+    # if config.GAN == 'Vanilla':
+    #     bce_loss = torch.nn.BCEWithLogitsLoss()
+    # elif config.GAN == 'LS':
+    #     bce_loss = torch.nn.MSELoss()
+    # else:
+    #     raise NotImplementedError
 
     ##################
     # TODO: LR scheduler
     ##################
 
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if config.NUM_CLASSES > 1 else 'max', patience=2)
-    # scheduler_discriminator1 = optim.lr_scheduler.ReduceLROnPlateau(optimizer_discriminator1, 'min' if config.NUM_CLASSES > 1 else 'max', patience=2)
-    # scheduler_discriminator2 = optim.lr_scheduler.ReduceLROnPlateau(optimizer_discriminator1, 'min' if config.NUM_CLASSES > 1 else 'max', patience=2)
-
     def lr_poly(base_lr, iter, max_iter, power):
         return base_lr * ((1 - float(iter) / max_iter) ** (power))
 
+    def lr_warmup(base_lr, iter, warmup_iter):
+        return base_lr * (float(iter) / warmup_iter)
+
     def adjust_learning_rate(optimizer, i_iter, lr=config.LR):
-        lr = lr_poly(lr, i_iter, config.ITERATIONS, config.POWER)
+        if i_iter < config.PREHEAT_STEPS:
+            lr = lr_warmup(lr, i_iter, config.PREHEAT_STEPS)
+        else:
+            lr = lr_poly(lr, i_iter, config.ITERATIONS, config.POWER)
         optimizer.param_groups[0]['lr'] = lr
         if len(optimizer.param_groups) > 1:
             optimizer.param_groups[1]['lr'] = lr * 10
 
     def adjust_learning_rate_D(optimizer, i_iter, lr=config.LR):
-        lr = lr_poly(lr, i_iter, config.ITERATIONS, config.POWER)
+        if i_iter < config.PREHEAT_STEPS:
+            lr = lr_warmup(lr, i_iter, config.PREHEAT_STEPS)
+        else:
+            lr = lr_poly(lr, i_iter, config.ITERATIONS, config.POWER)
         optimizer.param_groups[0]['lr'] = lr
         if len(optimizer.param_groups) > 1:
             optimizer.param_groups[1]['lr'] = lr * 10
+
+    def weightmap(pred1, pred2):
+        output = 1.0 - torch.sum((pred1 * pred2), 1).view(-1, 1, pred1.size(2), pred1.size(3)) / \
+                 (torch.norm(pred1, 2, 1) * torch.norm(pred2, 2, 1)).view(-1, 1, pred1.size(2), pred1.size(3))
+        return output
 
     ##################
     ##################
 
     net.train()
-    discriminator1.train()
-    discriminator2.train()
+    discriminator.train()
     best_Fwb = -np.inf
 
     # labels for adversarial training
@@ -175,26 +192,29 @@ def train_net(net,
             pass
 
     with tqdm(total=config.ITERATIONS, desc=f'Iterations {config.ITERATIONS}', unit='img') as pbar:
+        # for iteration in range(config.ITERATIONS):
         while global_step < config.ITERATIONS:
 
             seg_loss = 0
             seg_adv_loss = 0
-            dis_loss1 = 0
-            dis_loss2 = 0
+            weight_loss = 0
+            dis_loss_source = 0
+            dis_loss_target = 0
 
             optimizer.zero_grad()
-            optimizer_discriminator1.zero_grad()
-            optimizer_discriminator2.zero_grad()
+            optimizer_discriminator.zero_grad()
 
             adjust_learning_rate(optimizer, global_step)
-            adjust_learning_rate_D(optimizer_discriminator1, global_step)
-            adjust_learning_rate_D(optimizer_discriminator2, global_step)
+            adjust_learning_rate_D(optimizer_discriminator, global_step)
+
+            damping = (1 - global_step / config.ITERATIONS)
 
             ##########################
             # Seg w./ Source
             ##########################
             _, batch = source_train_iterator.__next__()
             imgs = batch['image']
+            depths = batch['depth']
             true_masks = batch['mask']
 
             assert imgs.shape[1] == config.NUM_CHANNELS, \
@@ -203,6 +223,7 @@ def train_net(net,
                 'the images are loaded correctly.'
 
             imgs = imgs.to(device=device, dtype=torch.float32)
+            depths = depths.to(device=device, dtype=torch.float32)
             mask_type = torch.float32 if config.NUM_CLASSES == 1 else torch.long
             true_masks = true_masks.to(device=device, dtype=mask_type)
 
@@ -210,7 +231,10 @@ def train_net(net,
                 ###################################
                 # multi
                 ###################################
-                masks_pred1_source, masks_pred2_source = net(imgs)
+                if config.USE_DEPTH_IMAGES:
+                    masks_pred1_source, masks_pred2_source = net(imgs, depths)
+                else:
+                    masks_pred1_source, masks_pred2_source = net(imgs)
                 loss = criterion(masks_pred1_source, true_masks.squeeze(1)) + \
                        config.LAMBDA_SEG * criterion(masks_pred2_source, true_masks.squeeze(1))
 
@@ -224,17 +248,16 @@ def train_net(net,
             # Seg w./ Target
             ##########################
             # don't accumulate grads in D
-            for param in discriminator1.parameters():
-                param.requires_grad = False
-
-            for param in discriminator2.parameters():
+            for param in discriminator.parameters():
                 param.requires_grad = False
 
             ###############
             ###############
             _, batch = target_train_iterator.__next__()
             imgs = batch['image']
+            depths = batch['depth']
             imgs = imgs.to(device=device, dtype=torch.float32)
+            depths = depths.to(device=device, dtype=torch.float32)
             # true_masks = batch['mask']
             # true_masks = true_masks.to(device=device, dtype=mask_type)
 
@@ -242,49 +265,56 @@ def train_net(net,
                 ###################################
                 # multi
                 ###################################
-                masks_pred1_target, masks_pred2_target = net(imgs)
+                if config.USE_DEPTH_IMAGES:
+                    masks_pred1_target, masks_pred2_target = net(imgs, depths)
+                else:
+                    masks_pred1_target, masks_pred2_target = net(imgs)
 
-            discriminator_out1_target = discriminator1(F.softmax(masks_pred1_target))
-            discriminator_out2_target = discriminator2(F.softmax(masks_pred2_target))
-            discriminator_adv1_fill = Variable(
+            discriminator_out1_target = upsample(discriminator(F.softmax(masks_pred1_target + masks_pred2_target, dim = 1)))
+            discriminator_adv_fill = Variable(
                 torch.FloatTensor(discriminator_out1_target.data.size()).fill_(source_label)).to(device=device)
-            discriminator_adv2_fill = Variable(
-                torch.FloatTensor(discriminator_out2_target.data.size()).fill_(source_label)).to(device=device)
 
-            loss = config.ADV_SEG1 * bce_loss(discriminator_out1_target, discriminator_adv1_fill) + \
-                   config.ADV_SEG2 * bce_loss(discriminator_out2_target, discriminator_adv2_fill)
-            seg_adv_loss += loss.item()
-            loss.backward()
+            weight_map = weightmap(F.softmax(masks_pred1_target, dim=1), F.softmax(masks_pred2_target, dim=1))
+
+            # Adaptive Adversarial Loss
+            if (global_step > config.PREHEAT_STEPS):
+                loss_adv = weighted_bce_loss(discriminator_out1_target, discriminator_adv_fill,
+                                             weight_map, config.EPSILON, config.LAMDA_LOCAL)
+            else:
+                loss_adv = bce_loss(discriminator_out1_target, discriminator_adv_fill)
+
+            loss_adv = loss_adv * config.LAMDA_ADV * damping
+            seg_adv_loss += loss_adv.item()
+            loss_adv.backward()
 
             writer.add_scalar('Adv_Loss/Adv', seg_adv_loss, global_step)
 
             #############################
-            # DISCRIMINATOR w/ Target
+            # Weight Discrepancy Loss
+            #############################
+
+            W5 = None
+            W6 = None
+            for (w5, w6) in zip(net.last_conv1.parameters(), net.last_conv2.parameters()):
+                if W5 is None and W6 is None:
+                    W5 = w5.view(-1)
+                    W6 = w6.view(-1)
+                else:
+                    W5 = torch.cat((W5, w5.view(-1)), 0)
+                    W6 = torch.cat((W6, w6.view(-1)), 0)
+
+            loss_weight = (torch.matmul(W5, W6) / (torch.norm(W5) * torch.norm(W6)) + 1)  # +1 is for a positive loss
+            weight_loss = loss_weight.item() * config.LAMDA_WEIGHT * damping * 2
+            loss_weight.backward()
+
+            writer.add_scalar('Adv_Loss/Weights', weight_loss, global_step)
+
+            #############################
             #############################
 
             # now accumulate grads in D
-            for param in discriminator1.parameters():
+            for param in discriminator.parameters():
                 param.requires_grad = True
-
-            for param in discriminator2.parameters():
-                param.requires_grad = True
-
-            masks_pred1_target = masks_pred1_target.detach()
-            masks_pred2_target = masks_pred2_target.detach()
-
-            discriminator_out1_target = discriminator1(F.softmax(masks_pred1_target))
-            discriminator_out2_target = discriminator2(F.softmax(masks_pred2_target))
-            discriminator_fill1_target = Variable(
-                torch.FloatTensor(discriminator_out1_target.data.size()).fill_(target_label)).to(device=device)
-            discriminator_fill2_target = Variable(
-                torch.FloatTensor(discriminator_out2_target.data.size()).fill_(target_label)).to(device=device)
-
-            loss_D1 = bce_loss(discriminator_out1_target, discriminator_fill1_target) / 2
-            loss_D2 = bce_loss(discriminator_out2_target, discriminator_fill2_target) / 2
-            dis_loss1 += loss_D1.item()
-            dis_loss2 += loss_D2.item()
-            loss_D1.backward()
-            loss_D2.backward()
 
             #############################
             # DISCRIMINATOR w/ Source
@@ -292,40 +322,55 @@ def train_net(net,
             masks_pred1_source = masks_pred1_source.detach()
             masks_pred2_source = masks_pred2_source.detach()
 
-            discriminator_out1_source = discriminator1(F.softmax(masks_pred1_source))
-            discriminator_out2_source = discriminator2(F.softmax(masks_pred2_source))
-            discriminator_fill1_source = Variable(
-                torch.FloatTensor(discriminator_out1_source.data.size()).fill_(source_label)).to(device=device)
-            discriminator_fill2_source = Variable(
-                torch.FloatTensor(discriminator_out2_source.data.size()).fill_(source_label)).to(device=device)
+            discriminator_out_source = upsample(discriminator(F.softmax(masks_pred1_source + masks_pred2_source, dim=1)))
+            discriminator_fill_source = Variable(
+                torch.FloatTensor(discriminator_out_source.data.size()).fill_(source_label)).to(device=device)
 
-            loss_D1 = bce_loss(discriminator_out1_source, discriminator_fill1_source) / 2
-            loss_D2 = bce_loss(discriminator_out2_source, discriminator_fill2_source) / 2
-            dis_loss1 += loss_D1.item()
-            dis_loss2 += loss_D2.item()
-            loss_D1.backward()
-            loss_D2.backward()
+            loss_D_source = bce_loss(discriminator_out_source, discriminator_fill_source)
+            dis_loss_source += loss_D_source.item()
+            loss_D_source.backward()
 
-            writer.add_scalar('Adv_Loss/Discriminator_1', dis_loss1, global_step)
-            writer.add_scalar('Adv_Loss/Discriminator_2', dis_loss2, global_step)
+            #############################
+            # DISCRIMINATOR w/ Target
+            #############################
+
+            masks_pred1_target = masks_pred1_target.detach()
+            masks_pred2_target = masks_pred2_target.detach()
+
+            discriminator_out_target = upsample(discriminator(F.softmax(masks_pred1_target + masks_pred1_target, dim=1)))
+            discriminator_fill_target = Variable(
+                torch.FloatTensor(discriminator_out_target.data.size()).fill_(target_label)).to(device=device)
+
+            # Adaptive Adversarial Loss
+            if (global_step > config.PREHEAT_STEPS):
+                loss_D_t = weighted_bce_loss(discriminator_out_target, discriminator_fill_target,
+                                             weight_map, config.EPSILON, config.LAMDA_LOCAL)
+            else:
+                loss_D_t = bce_loss(discriminator_out_target, discriminator_fill_target)
+
+            loss_D_target = bce_loss(discriminator_out_target, discriminator_fill_target)
+            dis_loss_target += loss_D_target.item()
+            loss_D_target.backward()
+
+            writer.add_scalar('Adv_Loss/Discriminator_Source', dis_loss_source, global_step)
+            writer.add_scalar('Adv_Loss/Discriminator_Target', dis_loss_target, global_step)
 
             ##########################
             ##########################
 
             optimizer.step()
-            optimizer_discriminator1.step()
-            optimizer_discriminator2.step()
+            optimizer_discriminator.step()
 
             pbar.set_postfix(**{'loss ': seg_loss,
                                 'adv_loss ': seg_adv_loss,
-                                'dis_loss1 ': dis_loss1,
-                                'dis_loss2 ': dis_loss2})
+                                'dis_loss_s ': dis_loss_source,
+                                'dis_loss_t ': dis_loss_target})
 
             global_step += 1
             pbar.update(imgs.shape[0])
 
             global_step += 1
-            if global_step % (config.NUM_IMAGES_PER_EPOCH // (1 * batch_size)) == 0:
+            if global_step % (config.NUM_IMAGES_PER_EPOCH // (1)) == 0:
                 # segmentation
                 for tag, value in net.named_parameters():
                     tag = tag.replace('.', '/')
@@ -338,7 +383,7 @@ def train_net(net,
                         writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
 
                 # discriminator
-                for tag, value in discriminator1.named_parameters():
+                for tag, value in discriminator.named_parameters():
                     tag = tag.replace('.', '/')
                     if value.grad is None:
                         print('Dis1_Layer: ', tag.split('/'))
@@ -348,28 +393,13 @@ def train_net(net,
                         writer.add_histogram('dis_weights1/' + tag, value.data.cpu().numpy(), global_step)
                         writer.add_histogram('dis_grads1/' + tag, value.grad.data.cpu().numpy(), global_step)
 
-                # discriminator
-                for tag, value in discriminator2.named_parameters():
-                    tag = tag.replace('.', '/')
-                    if value.grad is None:
-                        print('Dis2_Layer: ', tag.split('/'))
-                        writer.add_histogram('dis_weights2/' + tag, value.data.cpu().numpy(), global_step)
-                        pass
-                    else:
-                        writer.add_histogram('dis_weights2/' + tag, value.data.cpu().numpy(), global_step)
-                        writer.add_histogram('dis_grads2/' + tag, value.grad.data.cpu().numpy(), global_step)
-
                 # weighted fwb score
-                val_loss, Fwb = eval_net(net, upsample, target_val_loader, writer, global_step, device)
+                val_loss, Fwb = eval_net(net, upsample, target_val_loader, writer, best_Fwb, global_step, device)
                 writer.add_scalar('Weighted-Fb/Current-Fwb', Fwb, global_step)
 
-
-                # scheduler.step(val_loss)
-                # scheduler_discriminator1.step(val_loss)
-                # scheduler_discriminator2.step(val_loss)
+                # scheduler
                 writer.add_scalar('learning_rate/seg', optimizer.param_groups[0]['lr'], global_step)
-                writer.add_scalar('learning_rate/dis1', optimizer_discriminator1.param_groups[0]['lr'], global_step)
-                writer.add_scalar('learning_rate/dis2', optimizer_discriminator2.param_groups[0]['lr'], global_step)
+                writer.add_scalar('learning_rate/dis1', optimizer_discriminator.param_groups[0]['lr'], global_step)
 
                 if config.NUM_CLASSES > 1:
                     writer.add_scalar('Loss/test', val_loss, global_step)
@@ -381,14 +411,12 @@ def train_net(net,
                     best_Fwb = Fwb
                     writer.add_scalar('Weighted-Fb/Best-Fwb', best_Fwb, global_step)
                     torch.save(net.state_dict(), config.BEST_MODEL_SAVE_PATH)
-                    torch.save(discriminator1.state_dict(), config.BEST_DIS1_SAVE_PATH)
-                    torch.save(discriminator2.state_dict(), config.BEST_DIS2_SAVE_PATH)
+                    torch.save(discriminator.state_dict(), config.BEST_DIS1_SAVE_PATH)
                     logging.info('Best Model Saved with Fwb: {:.5}!'.format(best_Fwb))
 
     if save_cp:
-        torch.save(net.state_dict(), config.MODEL_SAVE_PATH + "Best_Seg_{:.5}.pth".format((best_Fwb)))
-        torch.save(discriminator1.state_dict(), config.MODEL_SAVE_PATH + "Best_Dis1_{:.5}.pth".format((best_Fwb)))
-        torch.save(discriminator2.state_dict(), config.MODEL_SAVE_PATH + "Best_Dis2_{:.5}.pth".format((best_Fwb)))
+        torch.save(net.state_dict(), config.MODEL_SAVE_PATH + "Epoch_{}_Best_Seg_{:.5}.pth".format((config.EPOCHS, best_Fwb)))
+        torch.save(discriminator.state_dict(), config.MODEL_SAVE_PATH + "Epoch_{}_Best_Dis1_{:.5}.pth".format((config.EPOCHS, best_Fwb)))
         logging.info('Final Model Saved with Fwb: {:.5}!'.format(best_Fwb))
     writer.close()
 
@@ -438,6 +466,9 @@ if __name__ == '__main__':
     elif config.MODEL_SELECTION == 'pretrained_deeplab_multi':
         net = DeepLabv3_plus_multi(nInputChannels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES,
                              os=16, pretrained=True, _print=False)
+    elif config.MODEL_SELECTION == 'pretrained_deeplab_multi_depth':
+        net = DeepLabv3_plus_multi_depth(nInputChannels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES,
+                                         os=16, pretrained=True, _print=False)
     elif config.MODEL_SELECTION == 'og_deeplab':
         net = Res_Deeplab(num_classes=config.NUM_CLASSES)
     else:
@@ -448,46 +479,53 @@ if __name__ == '__main__':
     #######################
     #######################
 
+    net.to(device=device)
+    # faster convolutions, but more memoryc
+    cudnn.benchmark = True
+
+    from torchsummary import summary
+
+    if config.USE_DEPTH_IMAGES:
+        summary(net, [(config.NUM_CHANNELS, config.CROP_H, config.CROP_W),
+                      (config.NUM_CHANNELS, config.CROP_H, config.CROP_W)])
+    else:
+        summary(net, (config.NUM_CHANNELS, config.CROP_H, config.CROP_W))
+
     logging.info(f'Network:\n'
                  f'\t{config.NUM_CHANNELS} input channels\n'
                  f'\t{config.NUM_CLASSES} output channels (classes)\n')
 
-     # TODO:
-    if args.load:
-        net.load_state_dict(torch.load(args.load, map_location=device))
-        logging.info(f'Model loaded from {args.load}')
-
-    net.to(device=device)
-    # faster convolutions, but more memory
-    cudnn.benchmark = True
-
-    from torchsummary import summary
-    summary(net, (config.NUM_CHANNELS, config.CROP_H, config.CROP_W))
+    if config.SEG_SAVED_WEIGHTS:
+        net.load_state_dict(torch.load(config.SEG_SAVED_WEIGHTS, map_location=device))
+        logging.info(f'Model loaded from {config.SEG_SAVED_WEIGHTS}!\n')
+    else:
+        logging.info(f'Training Model from scratch!\n')
 
     #######################
     # Discriminator
     #######################
 
-    discriminator1 = FCDiscriminator(num_classes=config.NUM_CLASSES)
-    discriminator1.to(device=device)
+    discriminator = FCDiscriminator(num_classes=config.NUM_CLASSES)
+    discriminator.to(device=device)
 
-    discriminator2 = FCDiscriminator(num_classes=config.NUM_CLASSES)
-    discriminator2.to(device=device)
+    from torchsummary import summary
+    summary(discriminator, (config.NUM_CLASSES, config.CROP_H, config.CROP_W))
 
     logging.info(f'Discriminator:\n'
                  f'\t{config.NUM_CLASSES} input channels (classes)\n')
 
-    from torchsummary import summary
-    summary(discriminator1, (config.NUM_CLASSES, config.CROP_H, config.CROP_W))
-    summary(discriminator2, (config.NUM_CLASSES, config.CROP_H, config.CROP_W))
+    if config.DIS_SAVED_WEIGHTS:
+        discriminator.load_state_dict(torch.load(config.DIS_SAVED_WEIGHTS, map_location=device))
+        logging.info(f'Discriminator loaded from {config.DIS_SAVED_WEIGHTS}')
+    else:
+        logging.info(f'Training Discriminator from scratch!\n')
 
     #######################
     #######################
 
     try:
         train_net(net=net,
-                  discriminator1=discriminator1,
-                  discriminator2=discriminator2,
+                  discriminator=discriminator,
                   upsample=upsample,
                   epochs=args.epochs,
                   batch_size=args.batchsize,

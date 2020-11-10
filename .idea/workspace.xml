@@ -2,16 +2,13 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="9963969c-a51e-445e-a3eb-f8ff4a144769" name="Default Changelist" comment="">
-      <change beforePath="$PROJECT_DIR$/data/imgs/.keep" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/data/masks/.keep" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/dice_loss.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/config.py" beforeDir="false" afterPath="$PROJECT_DIR$/config.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/eval.py" beforeDir="false" afterPath="$PROJECT_DIR$/eval.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/hubconf.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/predict.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/submit.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/predict.py" beforeDir="false" afterPath="$PROJECT_DIR$/predict.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/train.py" beforeDir="false" afterPath="$PROJECT_DIR$/train.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/utils/data_vis.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/train_adv.py" beforeDir="false" afterPath="$PROJECT_DIR$/train_adv.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/utils/dataset.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils/dataset.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -36,10 +33,31 @@
   </component>
   <component name="PropertiesComponent">
     <property name="RunOnceActivity.OpenProjectViewOnStart" value="true" />
-    <property name="last_opened_file_path" value="$PROJECT_DIR$/evaluate_weighted_Fb.py" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$/utils/dataset_depth.py" />
     <property name="settings.editor.selected.configurable" value="com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable" />
   </component>
-  <component name="RunManager" selected="Python.evaluate_weighted_Fb">
+  <component name="RunManager" selected="Python.dataset">
+    <configuration name="dataset" type="PythonConfigurationType" factoryName="Python">
+      <module name="Pytorch-UNet" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="$USER_HOME$/anaconda3/envs/UNET/bin/python" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/utils" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/utils/dataset_depth.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
     <configuration name="evaluate_weighted_Fb" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="Pytorch-UNet" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -61,7 +79,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="test_dataset" type="PythonConfigurationType" factoryName="Python">
+    <configuration name="pretrained_deeplab_multi_depth" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
       <module name="Pytorch-UNet" />
       <option name="INTERPRETER_OPTIONS" value="" />
       <option name="PARENT_ENVS" value="true" />
@@ -69,11 +87,11 @@
         <env name="PYTHONUNBUFFERED" value="1" />
       </envs>
       <option name="SDK_HOME" value="$USER_HOME$/anaconda3/envs/UNET/bin/python" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/utils" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/model" />
       <option name="IS_MODULE_SDK" value="false" />
       <option name="ADD_CONTENT_ROOTS" value="true" />
       <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/utils/dataset.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/model/pretrained_deeplab_multi_depth.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -83,8 +101,9 @@
       <method v="2" />
     </configuration>
     <list>
-      <item itemvalue="Python.test_dataset" />
+      <item itemvalue="Python.dataset" />
       <item itemvalue="Python.evaluate_weighted_Fb" />
+      <item itemvalue="Python.pretrained_deeplab_multi_depth" />
     </list>
   </component>
   <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
@@ -99,56 +118,56 @@
     <servers />
   </component>
   <component name="WindowStateProjectService">
-    <state x="402" y="27" width="1084" height="1053" key="#com.intellij.execution.impl.EditConfigurationsDialog" timestamp="1604931872660">
+    <state x="402" y="27" width="1084" height="1053" key="#com.intellij.execution.impl.EditConfigurationsDialog" timestamp="1605019254722">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state x="451" y="210" width="1084" height="786" key="#com.intellij.execution.impl.EditConfigurationsDialog/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1601218153197" />
-    <state x="402" y="27" width="1084" height="1053" key="#com.intellij.execution.impl.EditConfigurationsDialog/67.27.1853.1053@67.27.1853.1053" timestamp="1604931872660" />
-    <state x="706" y="412" width="1051" height="584" key="#xdebugger.evaluate" timestamp="1604931924918">
+    <state x="402" y="27" width="1084" height="1053" key="#com.intellij.execution.impl.EditConfigurationsDialog/67.27.1853.1053@67.27.1853.1053" timestamp="1605019254722" />
+    <state x="606" y="496" width="1051" height="584" key="#xdebugger.evaluate" timestamp="1605019380718">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
-    <state x="706" y="412" width="1051" height="584" key="#xdebugger.evaluate/67.27.1853.1053@67.27.1853.1053" timestamp="1604931924918" />
-    <state x="776" y="336" width="775" height="568" key="FileChooserDialogImpl" timestamp="1604931870643">
+    <state x="606" y="496" width="1051" height="584" key="#xdebugger.evaluate/67.27.1853.1053@67.27.1853.1053" timestamp="1605019380718" />
+    <state x="776" y="336" width="775" height="568" key="FileChooserDialogImpl" timestamp="1605019217107">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state x="776" y="336" width="424" height="484" key="FileChooserDialogImpl/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1602784762566" />
-    <state x="776" y="336" width="775" height="568" key="FileChooserDialogImpl/67.27.1853.1053@67.27.1853.1053" timestamp="1604931870643" />
-    <state width="1830" height="470" key="GridCell.Tab.0.bottom" timestamp="1604932124231">
+    <state x="776" y="336" width="775" height="568" key="FileChooserDialogImpl/67.27.1853.1053@67.27.1853.1053" timestamp="1605019217107" />
+    <state width="1830" height="379" key="GridCell.Tab.0.bottom" timestamp="1605020096335">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state width="1830" height="416" key="GridCell.Tab.0.bottom/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1601497088717" />
-    <state width="1830" height="470" key="GridCell.Tab.0.bottom/67.27.1853.1053@67.27.1853.1053" timestamp="1604932124231" />
-    <state width="1830" height="470" key="GridCell.Tab.0.center" timestamp="1604932124231">
+    <state width="1830" height="379" key="GridCell.Tab.0.bottom/67.27.1853.1053@67.27.1853.1053" timestamp="1605020096335" />
+    <state width="1830" height="379" key="GridCell.Tab.0.center" timestamp="1605020096335">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state width="1830" height="416" key="GridCell.Tab.0.center/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1601497088717" />
-    <state width="1830" height="470" key="GridCell.Tab.0.center/67.27.1853.1053@67.27.1853.1053" timestamp="1604932124231" />
-    <state width="1830" height="470" key="GridCell.Tab.0.left" timestamp="1604932124230">
+    <state width="1830" height="379" key="GridCell.Tab.0.center/67.27.1853.1053@67.27.1853.1053" timestamp="1605020096335" />
+    <state width="1830" height="379" key="GridCell.Tab.0.left" timestamp="1605020096335">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state width="1830" height="416" key="GridCell.Tab.0.left/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1601497088717" />
-    <state width="1830" height="470" key="GridCell.Tab.0.left/67.27.1853.1053@67.27.1853.1053" timestamp="1604932124230" />
-    <state width="1830" height="470" key="GridCell.Tab.0.right" timestamp="1604932124231">
+    <state width="1830" height="379" key="GridCell.Tab.0.left/67.27.1853.1053@67.27.1853.1053" timestamp="1605020096335" />
+    <state width="1830" height="379" key="GridCell.Tab.0.right" timestamp="1605020096335">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state width="1830" height="416" key="GridCell.Tab.0.right/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1601497088717" />
-    <state width="1830" height="470" key="GridCell.Tab.0.right/67.27.1853.1053@67.27.1853.1053" timestamp="1604932124231" />
-    <state width="1830" height="384" key="GridCell.Tab.1.bottom" timestamp="1604931944795">
+    <state width="1830" height="379" key="GridCell.Tab.0.right/67.27.1853.1053@67.27.1853.1053" timestamp="1605020096335" />
+    <state width="1830" height="384" key="GridCell.Tab.1.bottom" timestamp="1605019447899">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
-    <state width="1830" height="384" key="GridCell.Tab.1.bottom/67.27.1853.1053@67.27.1853.1053" timestamp="1604931944795" />
-    <state width="1830" height="384" key="GridCell.Tab.1.center" timestamp="1604931944795">
+    <state width="1830" height="384" key="GridCell.Tab.1.bottom/67.27.1853.1053@67.27.1853.1053" timestamp="1605019447899" />
+    <state width="1830" height="384" key="GridCell.Tab.1.center" timestamp="1605019447899">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
-    <state width="1830" height="384" key="GridCell.Tab.1.center/67.27.1853.1053@67.27.1853.1053" timestamp="1604931944795" />
-    <state width="1830" height="384" key="GridCell.Tab.1.left" timestamp="1604931944795">
+    <state width="1830" height="384" key="GridCell.Tab.1.center/67.27.1853.1053@67.27.1853.1053" timestamp="1605019447899" />
+    <state width="1830" height="384" key="GridCell.Tab.1.left" timestamp="1605019447899">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
-    <state width="1830" height="384" key="GridCell.Tab.1.left/67.27.1853.1053@67.27.1853.1053" timestamp="1604931944795" />
-    <state width="1830" height="384" key="GridCell.Tab.1.right" timestamp="1604931944795">
+    <state width="1830" height="384" key="GridCell.Tab.1.left/67.27.1853.1053@67.27.1853.1053" timestamp="1605019447899" />
+    <state width="1830" height="384" key="GridCell.Tab.1.right" timestamp="1605019447899">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
-    <state width="1830" height="384" key="GridCell.Tab.1.right/67.27.1853.1053@67.27.1853.1053" timestamp="1604931944795" />
+    <state width="1830" height="384" key="GridCell.Tab.1.right/67.27.1853.1053@67.27.1853.1053" timestamp="1605019447899" />
     <state x="482" y="187" key="SettingsEditor" timestamp="1603024950118">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
@@ -161,10 +180,14 @@
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state x="774" y="467" width="438" height="170" key="com.intellij.openapi.vcs.update.UpdateOrStatusOptionsDialogupdate-v2/67.27.1853.1053@67.27.1853.1053" timestamp="1604064314563" />
-    <state x="656" y="257" width="672" height="678" key="search.everywhere.popup" timestamp="1603146031128">
+    <state x="684" y="291" width="618" height="522" key="find.popup" timestamp="1604940070869">
+      <screen x="67" y="27" width="1853" height="1053" />
+    </state>
+    <state x="684" y="291" width="618" height="522" key="find.popup/67.27.1853.1053@67.27.1853.1053" timestamp="1604940070869" />
+    <state x="656" y="257" width="672" height="678" key="search.everywhere.popup" timestamp="1605023219623">
       <screen x="67" y="27" width="1853" height="1053" />
     </state>
     <state x="656" y="257" width="672" height="678" key="search.everywhere.popup/67.27.1853.1053/1920.0.1920.1080@67.27.1853.1053" timestamp="1601234167549" />
-    <state x="656" y="257" width="672" height="678" key="search.everywhere.popup/67.27.1853.1053@67.27.1853.1053" timestamp="1603146031128" />
+    <state x="656" y="257" width="672" height="678" key="search.everywhere.popup/67.27.1853.1053@67.27.1853.1053" timestamp="1605023219623" />
   </component>
 </project>

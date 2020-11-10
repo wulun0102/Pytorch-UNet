@@ -25,6 +25,8 @@ from torch.utils.tensorboard import SummaryWriter
 import segmentation_models_pytorch as smp
 from model.deeplab import Res_Deeplab
 from model.pretrained_deeplab import DeepLabv3_plus
+from model.pretrained_deeplab_multi import DeepLabv3_plus_multi
+from model.pretrained_deeplab_multi_depth import DeepLabv3_plus_multi_depth
 
 import wandb
 # wandb.init()
@@ -44,10 +46,10 @@ def train_net(net,
               save_cp=True,
               img_scale=1):
 
-    dataset = BasicDataset(config.RGB_DIR_PATH, config.MASKS_DIR_PATH,
+    dataset = BasicDataset(imgs_dir=config.RGB_DIR_PATH, masks_dir=config.MASKS_DIR_PATH, depth_dir=config.DEPTH_DIR_PATH,
                            scale=img_scale, apply_imgaug=config.APPLY_IMAGE_AUG,
                            take_center_crop=config.TAKE_CENTER_CROP, crop_h=config.CROP_H, crop_w=config.CROP_W,
-                           mask_suffix=config.GT_MASK_SUFFIX)
+                           mask_suffix=config.GT_MASK_SUFFIX, depth_suffix=config.DEPTH_SUFFIX)
 
     if config.TRAIN_ON_SUBSET:
         #################
@@ -74,6 +76,8 @@ def train_net(net,
 
     logging.info(f'''Starting training:
         Model:           {config.MODEL_SELECTION}
+        Multi Pred:      {config.MULTI_PRED}
+        Use Depth:       {config.USE_DEPTH_IMAGES}
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {lr}
@@ -88,12 +92,21 @@ def train_net(net,
         Device:          {device.type}
     ''')
 
-    optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if config.NUM_CLASSES > 1 else 'max', patience=2)
+    ##################
+    # SEGMENTATION
+    ##################
+
+    if config.MODEL_SELECTION == 'og_deeplab':
+        optimizer = optim.RMSprop(net.optim_parameters(lr=lr), lr=lr, weight_decay=1e-8, momentum=0.9)
+    else:
+        optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
+
     if config.NUM_CLASSES > 1:
         criterion = nn.CrossEntropyLoss()
     else:
         criterion = nn.BCEWithLogitsLoss()
+
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if config.NUM_CLASSES > 1 else 'max', patience=2)
 
     if save_cp:
         try:
@@ -102,13 +115,14 @@ def train_net(net,
         except OSError:
             pass
 
+    best_Fwb = -np.inf
     for epoch in range(epochs):
         net.train()
         epoch_loss = 0
-        best_Fwb = -np.inf
         with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
             for batch in train_loader:
                 imgs = batch['image']
+                depths = batch['depth']
                 true_masks = batch['mask']
                 assert imgs.shape[1] == config.NUM_CHANNELS, \
                     f'Network has been defined with {config.NUM_CHANNELS} input channels, ' \
@@ -116,15 +130,30 @@ def train_net(net,
                     'the images are loaded correctly.'
 
                 imgs = imgs.to(device=device, dtype=torch.float32)
+                depths = depths.to(device=device, dtype=torch.float32)
                 mask_type = torch.float32 if config.NUM_CLASSES == 1 else torch.long
                 true_masks = true_masks.to(device=device, dtype=mask_type)
 
-                if config.MODEL_SELECTION == 'adapt_deeplab':
-                    masks_pred = upsample(net(imgs))
-                else:
-                    masks_pred = net(imgs)
+                if config.MULTI_PRED:
+                ###################################
+                # multi
+                ###################################
+                    if config.USE_DEPTH_IMAGES:
+                        masks_pred1, masks_pred2 = net(imgs, depths)
+                    else:
+                        masks_pred1, masks_pred2 = net(imgs)
+                    loss = criterion(masks_pred1, true_masks.squeeze(1)) + criterion(masks_pred2, true_masks.squeeze(1))
 
-                loss = criterion(masks_pred, true_masks.squeeze(1))
+                else:
+                ###################################
+                # single
+                ###################################
+                    if config.MODEL_SELECTION == 'og_deeplab':
+                        masks_pred = upsample(net(imgs))
+                    else:
+                        masks_pred = net(imgs)
+                    loss = criterion(masks_pred, true_masks.squeeze(1))
+
                 epoch_loss += loss.item()
                 writer.add_scalar('Loss/train', loss.item(), global_step)
                 pbar.set_postfix(**{'loss (batch)': loss.item()})
@@ -150,13 +179,13 @@ def train_net(net,
                             writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
 
                     # weighted fwb score
-                    val_loss, Fwb = eval_net(net, upsample, val_loader, writer, global_step, device)
+                    val_loss, Fwb = eval_net(net, upsample, val_loader, writer, best_Fwb, global_step, device)
+                    writer.add_scalar('Weighted-Fb/Current-Fwb', Fwb, global_step)
 
                     scheduler.step(val_loss)
-                    writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
+                    writer.add_scalar('learning_rate/seg', optimizer.param_groups[0]['lr'], global_step)
 
                     if config.NUM_CLASSES > 1:
-                        writer.add_scalar('Weighted-Fb/test', Fwb, global_step)
                         writer.add_scalar('Loss/test', val_loss, global_step)
                     else:
                         logging.info('Validation Dice Coeff: {}'.format(Fwb))
@@ -164,14 +193,12 @@ def train_net(net,
 
                     if Fwb > best_Fwb and save_cp:
                         best_Fwb = Fwb
+                        writer.add_scalar('Weighted-Fb/Best-Fwb', best_Fwb, global_step)
                         torch.save(net.state_dict(), config.BEST_MODEL_SAVE_PATH)
                         logging.info('Best Model Saved with Fwb: {:.5}!'.format(best_Fwb))
 
-        # if save_cp:
-        #     torch.save(net.state_dict(), config.MODEL_SAVE_PATH)
-        #     logging.info(f'Checkpoint {epoch} saved !')
     if save_cp:
-        torch.save(net.state_dict(), config.BEST_MODEL_SAVE_PATH + '_' + str(best_Fwb))
+        torch.save(net.state_dict(), config.MODEL_SAVE_PATH + "Epoch_{}_Best_Seg_{:.5}.pth".format((config.EPOCHS, best_Fwb)))
         logging.info('Final Model Saved with Fwb: {:.5}!'.format(best_Fwb))
     writer.close()
 
@@ -199,6 +226,10 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device {device}')
 
+    #######################
+    # Segmentation
+    #######################
+
     # Change here to adapt to your data
     # n_channels=3 for RGB images
     # n_classes is the number of probabilities you want to get per pixel
@@ -213,30 +244,47 @@ if __name__ == '__main__':
         net = smp.FPN(config.BACKBONE, encoder_weights=config.ENCODER_WEIGHTS, classes=config.NUM_CLASSES)
     elif config.MODEL_SELECTION == 'pretrained_deeplab':
         net = DeepLabv3_plus(nInputChannels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES,
-                             os=16, pretrained=False, _print=False)
-    elif config.MODEL_SELECTION == 'adapt_deeplab':
+                             os=16, pretrained=True, _print=False)
+    elif config.MODEL_SELECTION == 'pretrained_deeplab_multi':
+        net = DeepLabv3_plus_multi(nInputChannels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES,
+                                   os=16, pretrained=True, _print=False)
+    elif config.MODEL_SELECTION == 'pretrained_deeplab_multi_depth':
+        net = DeepLabv3_plus_multi_depth(nInputChannels=config.NUM_CHANNELS, n_classes=config.NUM_CLASSES,
+                                         os=16, pretrained=True, _print=False)
+    elif config.MODEL_SELECTION == 'og_deeplab':
         net = Res_Deeplab(num_classes=config.NUM_CLASSES)
     else:
-        logging.info("*** No Model Selected! ***")
-        exit(0)
+        raise NotImplementedError
+
     upsample = nn.Upsample(size=(config.CROP_H, config.CROP_W), mode='bilinear', align_corners=True)
 
-    logging.info(f'Network:\n'
-                 f'\t{config.NUM_CHANNELS} input channels\n'
-                 f'\t{config.NUM_CLASSES} output channels (classes)\n')
-
-    if args.load:
-        net.load_state_dict(
-            torch.load(args.load, map_location=device)
-        )
-        logging.info(f'Model loaded from {args.load}')
+    #######################
+    #######################
 
     net.to(device=device)
     # faster convolutions, but more memory
     cudnn.benchmark = True
 
     from torchsummary import summary
-    summary(net, (config.NUM_CHANNELS, config.CROP_H, config.CROP_W))
+    if config.USE_DEPTH_IMAGES:
+        summary(net, [(config.NUM_CHANNELS, config.CROP_H, config.CROP_W),
+                      (config.NUM_CHANNELS, config.CROP_H, config.CROP_W)])
+    else:
+        summary(net, (config.NUM_CHANNELS, config.CROP_H, config.CROP_W))
+
+    logging.info(f'Network:\n'
+                 f'\t{config.NUM_CHANNELS} input channels\n'
+                 f'\t{config.NUM_CLASSES} output channels (classes)\n')
+
+    if config.SEG_SAVED_WEIGHTS:
+        net.load_state_dict(torch.load(config.SEG_SAVED_WEIGHTS, map_location=device))
+        logging.info(f'Model loaded from {config.SEG_SAVED_WEIGHTS}!\n')
+    else:
+        logging.info(f'Training Model from scratch!\n')
+
+
+    #######################
+    #######################
 
     try:
         train_net(net=net,
